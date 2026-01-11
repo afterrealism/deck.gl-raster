@@ -1,3 +1,36 @@
+*.xml
+
+# LLM/AI model files
+*.gguf
+*.ggml
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.mlmodel
+
+# LLM/AI config files
+CLAUDE.md
+.claude/
+.opencode/
+opencode.json
+.gemini/
+.aider*
+.cursor/
+.copilot/
+.github/copilot-instructions.md
+
+# pixi environments
+.pixi
+*.egg-info
+
+
+*.tif
+*.tiff
+*.mesh.json
+*.DS_Store
+
 # Logs
 logs
 *.log

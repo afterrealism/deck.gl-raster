@@ -1,0 +1,44 @@
+# Source files (dist is published)
+src/
+tests/
+examples/
+
+# Config files
+tsconfig.json
+tsconfig.build.json
+tsconfig.build.tsbuildinfo
+vitest.config.ts
+biome.json
+
+# Test files
+*.test.ts
+*.spec.ts
+coverage/
+
+# Dev/IDE
+.vscode/
+.idea/
+.git/
+.github/
+
+# LLM/AI files
+CLAUDE.md
+.claude/
+.opencode/
+opencode.json
+.gemini/
+.aider*
+.cursor/
+.copilot/
+
+# Logs and caches
+*.log
+.eslintcache
+.cache/
+
+# Lock files (users generate their own)
+pnpm-lock.yaml
+
+# Other
+node_modules/
+*.tsbuildinfo
