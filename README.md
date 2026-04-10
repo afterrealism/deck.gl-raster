@@ -35,6 +35,43 @@ new Deck({
 });
 ```
 
+## Single-band colormap
+
+For continuous single-band float rasters (DEM, NDVI, temperature, SAR backscatter), pass a named ramp and a data range:
+
+```typescript
+new COGLayer({
+  id: 'dem',
+  geotiff: 'https://example.com/dem.tif',    // float32 single-band
+  colormap: 'viridis',                        // or 'magma' | 'plasma' | 'turbo' | 'terrain'
+  rescaleRange: [0, 4000],                    // meters; use [-1, 1] for NDVI
+});
+```
+
+`colormap` also accepts a custom 256-entry RGBA8 `Uint8Array`, or a pre-built luma.gl `Texture` for fully custom LUTs:
+
+```typescript
+import { createColormapTexture } from '@afterrealism/deck.gl-raster/gpu-modules';
+
+// Custom LUT: 256 * 4 bytes, RGBA8
+const customLut = new Uint8Array(256 * 4);
+// ... fill with your colors ...
+
+new COGLayer({
+  geotiff: 'https://example.com/ndvi.tif',
+  colormap: customLut,
+  rescaleRange: [-1, 1],
+});
+```
+
+Runtime colormap changes rebuild the render pipeline without re-fetching the COG. Previous LUT textures are destroyed automatically on swap and on layer teardown.
+
+**Caveats:**
+- 8-bit paletted COGs use the embedded palette — `colormap` is ignored.
+- Multi-band float and signed-integer rasters are not yet supported.
+- `GeoTIFFLayer` (non-tiled) does not yet support these props.
+- Float pipelines require `rescaleRange`; missing it throws at parse time.
+
 ## Examples
 
 SvelteKit examples are included:

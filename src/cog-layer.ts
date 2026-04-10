@@ -17,7 +17,7 @@ import type { TileMatrix, TileMatrixSet } from "./raster-tileset/types.js";
 import { RasterLayer } from "./raster-layer.js";
 import { RasterTileset2D } from "./raster-tileset/index.js";
 import type { ReprojectionFns } from "./reproject/delatin.js";
-import type { Device } from "@luma.gl/core";
+import type { Device, Texture } from "@luma.gl/core";
 import type { BaseClient, GeoTIFF, GeoTIFFImage, Pool } from "geotiff";
 import { createConverter } from "./web-mercator.js";
 import { parseCOGTileMatrixSet } from "./cog-tile-matrix-set.js";
@@ -28,6 +28,7 @@ import {
 } from "./geotiff-loader/geotiff.js";
 import type { TextureDataT } from "./geotiff-loader/render-pipeline.js";
 import { inferRenderPipeline } from "./geotiff-loader/render-pipeline.js";
+import type { ColormapName } from "./gpu-modules/ramps.js";
 import { fromGeoTransform } from "./geotiff-reprojection.js";
 import type { GeoKeysParser, ProjectionInfo } from "./proj.js";
 import { epsgIoGeoKeyParser } from "./proj.js";
@@ -183,6 +184,42 @@ export interface COGLayerProps<
   debugOpacity?: number;
 
   /**
+   * Named color ramp or custom LUT for single-band rendering.
+   *
+   * Applied automatically when the source COG has `SamplesPerPixel === 1`
+   * and `SampleFormat === 3` (float). For 8-bit paletted COGs, the embedded
+   * palette takes precedence and this prop is ignored.
+   *
+   * Accepts:
+   * - A named ramp: `"viridis" | "magma" | "plasma" | "turbo" | "terrain"`
+   * - A custom 256-entry RGBA8 `Uint8Array` (exactly 1024 bytes)
+   * - A pre-built `Texture` (caller manages its lifetime)
+   *
+   * @default "viridis" (for float single-band data)
+   * @example
+   * ```ts
+   * new COGLayer({
+   *   geotiff: 'https://example.com/dem.tif',
+   *   colormap: 'terrain',
+   *   rescaleRange: [0, 4000],
+   * });
+   * ```
+   */
+  colormap?: ColormapName | Uint8Array | Texture;
+
+  /**
+   * Data range `[min, max]` for single-band float normalization. Required
+   * for float single-band data — raw values (e.g. elevation in meters,
+   * NDVI in `[-1, 1]`) cannot index a LUT without an explicit range.
+   *
+   * Not used for 8-bit palette or multi-band RGB data.
+   *
+   * @example `[0, 4000]` for a DEM in meters
+   * @example `[-1, 1]` for NDVI
+   */
+  rescaleRange?: [number, number];
+
+  /**
    * Called when the GeoTIFF metadata has been loaded and parsed.
    *
    * @param   {GeoTIFF}  geotiff
@@ -233,6 +270,12 @@ export class COGLayer<
     images?: GeoTIFFImage[];
     defaultGetTileData?: COGLayerProps<TextureDataT>["getTileData"];
     defaultRenderTile?: COGLayerProps<TextureDataT>["renderTile"];
+    /**
+     * GPU textures whose lifetime is tied to the current default pipeline.
+     * Destroyed on pipeline rebuild and on layer teardown to avoid leaks
+     * when switching colormaps at runtime.
+     */
+    defaultOwnedTextures?: Texture[];
   };
 
   override initializeState(): void {
@@ -244,12 +287,80 @@ export class COGLayer<
 
     const { props, oldProps, changeFlags } = params;
 
-    const needsUpdate =
+    const needsReparse =
       Boolean(changeFlags.dataChanged) || props.geotiff !== oldProps.geotiff;
 
-    if (needsUpdate) {
+    // If only colormap-related props changed, we can rebuild the default
+    // pipeline without re-fetching the COG (which may be large).
+    const needsPipelineRebuild =
+      !needsReparse &&
+      Boolean(this.state.images) &&
+      (props.colormap !== oldProps.colormap ||
+        props.rescaleRange?.[0] !== oldProps.rescaleRange?.[0] ||
+        props.rescaleRange?.[1] !== oldProps.rescaleRange?.[1]);
+
+    if (needsReparse) {
       this._parseGeoTIFF();
+    } else if (needsPipelineRebuild) {
+      this._rebuildPipeline();
     }
+  }
+
+  override finalizeState(context: unknown): void {
+    this._destroyOwnedTextures();
+    // @ts-expect-error CompositeLayer.finalizeState signature varies across
+    // deck.gl versions; passing the context through is the forward-compatible
+    // call pattern.
+    super.finalizeState?.(context);
+  }
+
+  private _destroyOwnedTextures(): void {
+    const textures = this.state.defaultOwnedTextures;
+    if (!textures) return;
+    for (const tex of textures) {
+      try {
+        tex.destroy();
+      } catch (_err) {
+        // Defensive: never throw from teardown. If a texture was already
+        // destroyed externally we just move on.
+      }
+    }
+  }
+
+  /**
+   * Rebuild the default tile-data + render-tile pipeline using current
+   * `colormap` / `rescaleRange` props, WITHOUT re-fetching the COG.
+   *
+   * Old GPU textures owned by the previous pipeline are destroyed before the
+   * state swap to prevent memory leaks on runtime colormap switches.
+   */
+  private _rebuildPipeline(): void {
+    const image = this.state.images?.[0];
+    if (!image) return;
+
+    // Destroy previously-owned textures before the state swap. Cached tiles
+    // in the underlying TileLayer are re-rendered via _renderSubLayers, which
+    // reads state.defaultRenderTile fresh on every frame, so the new pipeline
+    // is picked up immediately after setState. Note: this assumes
+    // `getTileData` output shape is unchanged (only downstream shader modules
+    // differ). If a future pipeline variant changes tile data, the TileLayer
+    // cache would need explicit invalidation here.
+    this._destroyOwnedTextures();
+
+    const {
+      getTileData: defaultGetTileData,
+      renderTile: defaultRenderTile,
+      ownedTextures: defaultOwnedTextures,
+    } = inferRenderPipeline(image.fileDirectory as any, this.context.device, {
+      colormap: this.props.colormap,
+      rescaleRange: this.props.rescaleRange,
+    });
+
+    this.setState({
+      defaultGetTileData,
+      defaultRenderTile,
+      defaultOwnedTextures,
+    });
   }
 
   async _parseGeoTIFF(): Promise<void> {
@@ -287,8 +398,18 @@ export class COGLayer<
       });
     }
 
-    const { getTileData: defaultGetTileData, renderTile: defaultRenderTile } =
-      inferRenderPipeline(image.fileDirectory as any, this.context.device);
+    // Destroy any textures left over from a previous parse (e.g. after the
+    // user swaps `geotiff` to a new URL).
+    this._destroyOwnedTextures();
+
+    const {
+      getTileData: defaultGetTileData,
+      renderTile: defaultRenderTile,
+      ownedTextures: defaultOwnedTextures,
+    } = inferRenderPipeline(image.fileDirectory as any, this.context.device, {
+      colormap: this.props.colormap,
+      rescaleRange: this.props.rescaleRange,
+    });
 
     this.setState({
       metadata,
@@ -297,6 +418,7 @@ export class COGLayer<
       images,
       defaultGetTileData,
       defaultRenderTile,
+      defaultOwnedTextures,
     });
   }
 
