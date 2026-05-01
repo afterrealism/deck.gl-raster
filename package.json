@@ -49,8 +49,8 @@
     "url": "git+https://github.com/afterrealism/deck.gl-raster.git"
   },
   "devDependencies": {
-    "@luma.gl/core": "9.2.5",
-    "@luma.gl/shadertools": "9.2.5",
+    "@luma.gl/core": "9.3.3",
+    "@luma.gl/shadertools": "9.3.3",
     "@types/node": "^25.0.3",
     "jsdom": "^27.4.0",
     "publint": "^0.3.16",
@@ -74,10 +74,10 @@
   "pnpm": {
     "overrides": {
       "@luma.gl/constants": "9.2.5",
-      "@luma.gl/core": "9.2.5",
+      "@luma.gl/core": "9.3.3",
       "@luma.gl/engine": "9.2.5",
       "@luma.gl/gltf": "9.2.5",
-      "@luma.gl/shadertools": "9.2.5",
+      "@luma.gl/shadertools": "9.3.3",
       "@luma.gl/webgl": "9.2.5"
     }
   },
